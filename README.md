@@ -98,14 +98,37 @@ Chiqish kodi: `0` — tahdid yo'q (yoki hammasi zararsizlantirildi), `1` — tah
 
 `qalqon update` quyidagilarni yuklaydi:
 
-- **ClamAV** `daily.cvd` va `main.cvd` — `database.clamav.net` dan. Yangi versiya borligi DNS orqali
-  (`current.cvd.clamav.net`) tekshiriladi, 4 soatda bir martadan ko'p yuklanmaydi (ClamAV CDN cheklovi).
-  Fayl yaxlitligi MD5 bilan tekshiriladi. Shaxsiy oyna (mirror) uchun: `QALQON_CLAMAV_MIRROR=https://...`
 - **MalwareBazaar** — oxirgi 48 soatdagi zararli fayllar xeshlari. abuse.ch kalit talab qilsa,
   uni [auth.abuse.ch](https://auth.abuse.ch/) dan bepul olib, `QALQON_ABUSE_KEY` ga yozing.
+- **ClamAV** `main` va `daily` bazalari.
 
-Agar kompyuterda internet bo'lmasa yoki CDN bloklasa, `main.cvd`/`daily.cvd` ni boshqa joyda yuklab
-(masalan [cvdupdate](https://github.com/Cisco-Talos/cvdupdate) bilan) `qalqon update --file` orqali import qiling.
+### ClamAV bazasini olish
+
+ClamAV serveri (`database.clamav.net`) faqat rasmiy yuklovchilarni — **freshclam** va **cvdupdate** ni
+o'tkazadi, boshqa dasturlarga `403 Forbidden` qaytaradi. Shuning uchun bazani ulardan biri bilan yuklang —
+Qalqon har yangilanishda uni **avtomatik topib oladi**:
+
+**1-usul — cvdupdate** ([Python](https://www.python.org/downloads/) kerak):
+
+```bat
+python -m pip install --user cvdupdate
+cvd update
+qalqon update
+```
+
+`cvd update` bazani `%USERPROFILE%\.cvdupdate\database` ga yuklaydi. Uni Task Scheduler'da kuniga bir marta
+ishga tushiradigan qilib qo'ysangiz, Qalqon har 6 soatlik yangilanishda yangi bazani oladi.
+
+**2-usul — ClamAV for Windows**: [clamav.net/downloads](https://www.clamav.net/downloads) dan o'rnating,
+`freshclam` ni ishga tushiring (`C:\Program Files\ClamAV\database`).
+
+**3-usul — qo'lda**: boshqa kompyuterda yuklangan `main.cvd`/`daily.cvd` ni import qiling:
+`qalqon update --file D:\clamav` (papka yoki fayl).
+
+Qalqon quyidagi papkalarni tekshiradi: barcha foydalanuvchilarning `.cvdupdate\database`,
+`Program Files\ClamAV\database`, `C:\ClamAV\database` va `QALQON_CLAMAV_DIR` muhit o'zgaruvchisi.
+Server 403 qaytarsa, Qalqon unga 24 soat davomida qayta murojaat qilmaydi (aks holda IP uzoqroq bloklanadi).
+Shaxsiy oyna (mirror) uchun: `QALQON_CLAMAV_MIRROR=https://...`
 
 Bazalar ixcham jadvallarga kompilyatsiya qilinadi va xotiraga akslantiriladi (mmap): millionlab imzo
 bir zumda ochiladi va kam xotira oladi.

@@ -44,11 +44,12 @@ func (a *app) update(o updateOpts) int {
 		fmt.Println(ui.Red("Xato: " + err.Error()))
 		return 1
 	}
-	changed, okCount, failCount := false, 0, 0
+	changed, okCount, failCount, blocked := false, 0, 0, false
 	report := func(name string, ch bool, err error) {
 		switch {
 		case err != nil:
 			failCount++
+			blocked = blocked || errors.Is(err, errCDNBlocked)
 			a.println(ui.Red(fmt.Sprintf("  ✘ %s: %v", name, err)))
 			a.logLine(fmt.Sprintf("YANGILASH XATO %s: %v", name, err))
 		default:
@@ -113,6 +114,9 @@ func (a *app) update(o updateOpts) int {
 		a.state.set(func(s *appState) { s.LastUpdate = time.Now() })
 	}
 	if okCount == 0 && failCount > 0 {
+		if blocked {
+			return 1
+		}
 		a.println(ui.Dim("Internet aloqasini tekshiring. Bazani boshqa kompyuterda yuklab, \"qalqon update --file main.cvd\" bilan import qilish ham mumkin."))
 		return 1
 	}
@@ -278,30 +282,126 @@ func localCVDVersion(path string) int {
 	return h.Version
 }
 
-// updateClamAV ClamAV bazalarini (main.cvd, daily.cvd) yangilaydi.
+// errCDNBlocked ClamAV CDN so'rovni rad etdi (403/429). CDN faqat rasmiy
+// yuklovchilarni (freshclam, cvdupdate) o'tkazadi.
+var errCDNBlocked = errors.New("ClamAV serveri yuklashni rad etdi")
+
+const clamavHelp = `ClamAV serveri faqat rasmiy yuklovchilarni (freshclam, cvdupdate) o'tkazadi.
+  Bazani ulardan biri bilan yuklang — Qalqon uni har yangilanishda avtomatik oladi:
+    • cvdupdate (Python kerak):  pip install cvdupdate   va   cvd update
+    • yoki ClamAV for Windows (clamav.net/downloads) o'rnatib, freshclam ni ishga tushiring
+  Yoki tayyor fayllarni import qiling:  qalqon update --file <papka yoki main.cvd>`
+
+// clamavLocalDirs rasmiy ClamAV vositalari bazani saqlaydigan odatiy papkalar.
+func clamavLocalDirs() []string {
+	var dirs []string
+	if d := os.Getenv("QALQON_CLAMAV_DIR"); d != "" {
+		dirs = append(dirs, d)
+	}
+	homes := map[string]bool{}
+	if h, err := os.UserHomeDir(); err == nil {
+		homes[h] = true
+	}
+	usersRoot := "/home"
+	if pub := os.Getenv("PUBLIC"); pub != "" {
+		usersRoot = filepath.Dir(pub)
+	}
+	if ents, err := os.ReadDir(usersRoot); err == nil {
+		for _, e := range ents {
+			if e.IsDir() {
+				homes[filepath.Join(usersRoot, e.Name())] = true
+			}
+		}
+	}
+	for h := range homes {
+		dirs = append(dirs, filepath.Join(h, ".cvdupdate", "database"), filepath.Join(h, ".cvdupdate", "databases"))
+	}
+	for _, pf := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+		if pf != "" {
+			dirs = append(dirs, filepath.Join(pf, "ClamAV", "database"), filepath.Join(pf, "ClamAV"))
+		}
+	}
+	dirs = append(dirs, `C:\ClamAV\database`, "/var/lib/clamav")
+	return dirs
+}
+
+// sourceCVDVersion manbalardagi name.cvd yoki name.cld versiyasi.
+func (a *app) sourceCVDVersion(name string) int {
+	v := localCVDVersion(filepath.Join(a.store.SourcesDir(), name+".cvd"))
+	return max(v, localCVDVersion(filepath.Join(a.store.SourcesDir(), name+".cld")))
+}
+
+func (a *app) haveClamAV() bool {
+	return a.sourceCVDVersion("main") > 0 || a.sourceCVDVersion("daily") > 0
+}
+
+// importLocalClamAV freshclam/cvdupdate yuklagan yangiroq bazalarni manbalarga ko'chiradi.
+func (a *app) importLocalClamAV(dirs []string) bool {
+	changed := false
+	for _, name := range []string{"main", "daily"} {
+		best, bestV := "", a.sourceCVDVersion(name)
+		for _, d := range dirs {
+			for _, ext := range []string{".cvd", ".cld"} {
+				p := filepath.Join(d, name+ext)
+				if v := localCVDVersion(p); v > bestV {
+					best, bestV = p, v
+				}
+			}
+		}
+		if best == "" {
+			continue
+		}
+		if ch, err := a.importFile(best); err != nil {
+			a.println(ui.Yellow(fmt.Sprintf("  ! %s: %v", best, err)))
+		} else if ch {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// updateClamAV ClamAV bazalarini (main, daily) yangilaydi: avval kompyuterdagi
+// freshclam/cvdupdate bazalaridan, so'ng (ruxsat bo'lsa) internetdan.
 func (a *app) updateClamAV(force bool) (bool, error) {
-	if !force && time.Since(a.state.get().LastClamAVCheck) < clamavMinWait && a.store.CurrentVersion() != "" {
+	changed := a.importLocalClamAV(clamavLocalDirs())
+	st := a.state.get()
+	if !force && time.Now().Before(st.ClamAVBlockedUntil) {
+		if a.haveClamAV() {
+			a.println(ui.Dim("ClamAV: server yuklashni rad etgan — kompyuterdagi bazadan foydalanilmoqda."))
+			return changed, nil
+		}
+		return changed, fmt.Errorf("%w (%s gacha qayta urinilmaydi)\n  %s", errCDNBlocked, st.ClamAVBlockedUntil.Format("02.01 15:04"), clamavHelp)
+	}
+	if !force && time.Since(st.LastClamAVCheck) < clamavMinWait && a.store.CurrentVersion() != "" {
 		a.println(ui.Dim("ClamAV: yaqinda tekshirilgan (4 soatda bir martadan ko'p yuklanmaydi)."))
-		return false, nil
+		return changed, nil
 	}
 	mirror := strings.TrimRight(os.Getenv("QALQON_CLAMAV_MIRROR"), "/")
 	if mirror == "" {
 		mirror = clamavMirror
 	}
 	remote := clamavRemoteVersions()
-	changed := false
 	var firstErr error
 	for _, name := range []string{"daily", "main"} {
-		dst := filepath.Join(a.store.SourcesDir(), name+".cvd")
-		localV := localCVDVersion(dst)
-		if localV == 0 {
-			localV = localCVDVersion(filepath.Join(a.store.SourcesDir(), name+".cld"))
-		}
+		localV := a.sourceCVDVersion(name)
 		if rv, ok := remote[name]; ok && rv > 0 && localV >= rv {
-			a.println(ui.Dim(fmt.Sprintf("ClamAV %s.cvd: eng so'nggi (v%d)", name, localV)))
+			a.println(ui.Dim(fmt.Sprintf("ClamAV %s: eng so'nggi (v%d)", name, localV)))
 			continue
 		}
+		dst := filepath.Join(a.store.SourcesDir(), name+".cvd")
 		ch, err := a.downloadCVD(mirror+"/"+name+".cvd", dst)
+		if errors.Is(err, errCDNBlocked) {
+			// Qayta-qayta urinish IP manzilni uzoqroq bloklanishiga olib keladi.
+			a.state.set(func(s *appState) {
+				s.LastClamAVCheck = time.Now()
+				s.ClamAVBlockedUntil = time.Now().Add(24 * time.Hour)
+			})
+			if a.haveClamAV() {
+				a.println(ui.Yellow("ClamAV serveri yuklashni rad etdi — kompyuterdagi bazadan foydalanilmoqda."))
+				return changed, nil
+			}
+			return changed, fmt.Errorf("%w\n  %s", err, clamavHelp)
+		}
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s.cvd: %w", name, err)
@@ -340,7 +440,7 @@ func (a *app) downloadCVD(u, dst string) (bool, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-			return false, fmt.Errorf("server javobi: %s (ClamAV CDN cheklovi; keyinroq urinib ko'ring yoki QALQON_CLAMAV_MIRROR dan foydalaning)", resp.Status)
+			return false, fmt.Errorf("%w (%s)", errCDNBlocked, resp.Status)
 		}
 		return false, fmt.Errorf("server javobi: %s", resp.Status)
 	}
@@ -404,6 +504,9 @@ var sigFileExts = map[string]bool{".hdb": true, ".hsb": true, ".mdb": true, ".ms
 
 // importFile mahalliy fayldan bazaga import qiladi.
 func (a *app) importFile(path string) (bool, error) {
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		return a.importDir(path)
+	}
 	ext := strings.ToLower(filepath.Ext(path))
 	base := filepath.Base(path)
 	switch {
@@ -457,4 +560,29 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// importDir papkadagi ClamAV bazalari va imzo fayllarini import qiladi.
+func (a *app) importDir(dir string) (bool, error) {
+	changed := a.importLocalClamAV([]string{dir})
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return changed, err
+	}
+	n := 0
+	for _, e := range ents {
+		if e.IsDir() || !sigFileExts[strings.ToLower(filepath.Ext(e.Name()))] {
+			continue
+		}
+		ch, err := a.importFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || ch
+		n++
+	}
+	if !changed && n == 0 && !a.haveClamAV() {
+		return false, errors.New("papkada main.cvd/daily.cvd yoki imzo fayllari topilmadi")
+	}
+	return changed, nil
 }

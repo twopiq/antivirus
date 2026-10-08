@@ -17,6 +17,8 @@ type appState struct {
 	LastFull        time.Time `json:"last_full"`
 	LastUpdate      time.Time `json:"last_update"`
 	LastClamAVCheck time.Time `json:"last_clamav_check"`
+	// ClamAVBlockedUntil — ClamAV CDN 403 qaytargandan keyin serverga qayta murojaat qilinmaydigan vaqt.
+	ClamAVBlockedUntil time.Time `json:"clamav_blocked_until"`
 }
 
 func loadState(path string) *appState {
@@ -44,7 +46,7 @@ func (s *appState) get() appState {
 	if b, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(b, s)
 	}
-	return appState{LastQuick: s.LastQuick, LastFull: s.LastFull, LastUpdate: s.LastUpdate, LastClamAVCheck: s.LastClamAVCheck}
+	return appState{LastQuick: s.LastQuick, LastFull: s.LastFull, LastUpdate: s.LastUpdate, LastClamAVCheck: s.LastClamAVCheck, ClamAVBlockedUntil: s.ClamAVBlockedUntil}
 }
 
 // ago vaqtni "3 kun oldin" ko'rinishida yozadi.
