@@ -160,7 +160,7 @@ func (a *app) status() int {
 	ver := a.store.CurrentVersion()
 	age := "—"
 	fresh := false
-	if t, err := time.ParseInLocation("20060102-150405", ver, time.Local); err == nil {
+	if t, err := time.ParseInLocation("20060102-150405", ver[:min(len(ver), 15)], time.Local); err == nil {
 		age = ago(t)
 		fresh = time.Since(t) < 3*24*time.Hour
 	}

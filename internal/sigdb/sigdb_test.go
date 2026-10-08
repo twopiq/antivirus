@@ -137,6 +137,9 @@ func TestBuildAndLookup(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "db", "old-version")); !os.IsNotExist(err) {
 		t.Fatal("eski versiya o'chirilmadi")
 	}
+	if st.CurrentVersion() == old {
+		t.Fatal("bir soniya ichidagi qayta kompilyatsiya eski papkaga yozildi")
+	}
 	_ = old
 }
 

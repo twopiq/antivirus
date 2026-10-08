@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -230,8 +231,17 @@ func (s Store) Rebuild(progress func(string)) (Stats, error) {
 	if len(srcs) == 0 {
 		return Stats{}, errors.New("manba fayllar yo'q")
 	}
+	// Har bir kompilyatsiya yangi papkaga yoziladi: Windows'da ochiq (mmap) baza
+	// fayllarini qayta yozib bo'lmaydi, masalan real vaqt himoyasi ishlab turganda.
 	ver := time.Now().Format("20060102-150405")
 	out := filepath.Join(s.dbDir(), ver)
+	for i := 2; ; i++ {
+		if _, err := os.Stat(out); os.IsNotExist(err) {
+			break
+		}
+		ver = fmt.Sprintf("%s-%d", time.Now().Format("20060102-150405"), i)
+		out = filepath.Join(s.dbDir(), ver)
+	}
 	st, err := build(out, srcs, progress)
 	if err != nil {
 		os.RemoveAll(out)
