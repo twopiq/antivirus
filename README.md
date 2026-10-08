@@ -112,11 +112,12 @@ Qalqon har yangilanishda uni **avtomatik topib oladi**:
 
 ```bat
 python -m pip install --user cvdupdate
-cvd update
+python -m cvdupdate update
 qalqon update
 ```
 
-`cvd update` bazani `%USERPROFILE%\.cvdupdate\database` ga yuklaydi. Uni Task Scheduler'da kuniga bir marta
+(`--user` bilan o'rnatilganda `cvd` buyrug'i PATH'da bo'lmasligi mumkin, shuning uchun `python -m cvdupdate` ishlatiladi.)
+`cvdupdate` bazani `%USERPROFILE%\.cvdupdate\database` ga yuklaydi. Uni Task Scheduler'da kuniga bir marta
 ishga tushiradigan qilib qo'ysangiz, Qalqon har 6 soatlik yangilanishda yangi bazani oladi.
 
 **2-usul — ClamAV for Windows**: [clamav.net/downloads](https://www.clamav.net/downloads) dan o'rnating,

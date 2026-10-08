@@ -288,7 +288,7 @@ var errCDNBlocked = errors.New("ClamAV serveri yuklashni rad etdi")
 
 const clamavHelp = `ClamAV serveri faqat rasmiy yuklovchilarni (freshclam, cvdupdate) o'tkazadi.
   Bazani ulardan biri bilan yuklang — Qalqon uni har yangilanishda avtomatik oladi:
-    • cvdupdate (Python kerak):  pip install cvdupdate   va   cvd update
+    • cvdupdate (Python kerak):  python -m pip install --user cvdupdate   va   python -m cvdupdate update
     • yoki ClamAV for Windows (clamav.net/downloads) o'rnatib, freshclam ni ishga tushiring
   Yoki tayyor fayllarni import qiling:  qalqon update --file <papka yoki main.cvd>`
 
