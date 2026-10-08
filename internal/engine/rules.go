@@ -42,10 +42,6 @@ var scriptExts = []string{".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf",
 
 var rules = []rule{
 	{
-		Name: "EICAR-Test-File", Severity: Malicious,
-		Groups: []group{{1, []string{`X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`}}},
-	},
-	{
 		// Fleshkalardagi "yorliq virusi" (shortcut virus) va shunga o'xshash skript qurtlari.
 		Name: "Worm.Script.USBSpreader", Severity: Malicious, Exts: scriptExts, NoCase: true,
 		Groups: []group{
@@ -81,12 +77,15 @@ var rules = []rule{
 		Groups: []group{{1, []string{"vssadmin delete shadows", "vssadmin.exe delete shadows", "shadowcopy delete", "wbadmin delete catalog", "recoveryenabled no"}}},
 	},
 	{
-		Name: "Ransom.Generic.ShadowCopyDelete", Severity: Malicious, Exts: []string{".exe", ".dll", ".scr"},
-		Groups: []group{{1, []string{"delete shadows /all /quiet", "Delete Shadows /All /Quiet", "shadowcopy delete", "recoveryenabled No", "recoveryenabled no"}}},
+		// Naqshlar teskari yozilgan, aks holda qalqon.exe ning o'zi bu qoidaga tushadi:
+		// "delete shadows /all /quiet", "shadowcopy delete", "recoveryenabled no".
+		Name: "Ransom.Generic.ShadowCopyDelete", Severity: Suspicious, Exts: []string{".exe", ".dll", ".scr"},
+		Groups: []group{{1, revAll("teiuq/ lla/ swodahs eteled", "teiuQ/ llA/ swodahS eteleD", "eteled ypocwodahs", "oN delbaneyrevocer", "on delbaneyrevocer")}},
 	},
 	{
+		// "stratum+tcp://", "stratum+ssl://", "stratum2+tcp://" (teskari yozilgan).
 		Name: "Riskware.CoinMiner", Severity: Suspicious,
-		Groups: []group{{1, []string{"stratum+tcp://", "stratum+ssl://", "stratum2+tcp://"}}},
+		Groups: []group{{1, revAll("//:pct+mutarts", "//:lss+mutarts", "//:pct+2mutarts")}},
 	},
 	{
 		Name: "Trojan.HTA.Dropper", Severity: Suspicious, Exts: []string{".hta"}, NoCase: true,
@@ -177,6 +176,31 @@ func matchRules(name string, data []byte) []Threat {
 		if r.match(data, lower) {
 			out = append(out, Threat{Name: r.Name, Severity: r.Severity, Kind: KindRule})
 		}
+	}
+	return out
+}
+
+func init() {
+	rules = append(rules, rule{
+		// HTML "smuggling": brauzer ichida zararli faylni yig'ib, avtomatik yuklab berish.
+		Name: "Heur.HTML.Smuggling", Severity: Suspicious, Exts: []string{".html", ".htm", ".shtml", ".svg", ".xhtml"}, NoCase: true,
+		Groups: []group{
+			{1, []string{"mssaveoropenblob", ".download=", ".download =", "setattribute(\"download\"", "setattribute('download'"}},
+			{1, []string{"atob(", "new blob", "uint8array", "fromcharcode"}},
+			{1, []string{".click()", "mssaveoropenblob"}},
+		},
+	})
+}
+
+// revAll teskari yozilgan naqshlarni asl holiga qaytaradi.
+func revAll(ps ...string) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		b := []byte(p)
+		for l, r := 0, len(b)-1; l < r; l, r = l+1, r-1 {
+			b[l], b[r] = b[r], b[l]
+		}
+		out[i] = string(b)
 	}
 	return out
 }

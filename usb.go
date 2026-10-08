@@ -82,7 +82,7 @@ func (a *app) usbScan(args []string) int {
 			continue
 		}
 		extra := usbRootThreats(root)
-		res := a.scan("Fleshkani tekshirish: "+root, []string{root})
+		res := a.scan("Fleshkani tekshirish: "+root, []string{root}, false)
 		_, rem := a.handleThreats(append(extra, res.Threats...))
 		if len(rem) > 0 {
 			code = 1

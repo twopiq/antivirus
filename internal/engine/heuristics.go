@@ -50,10 +50,29 @@ func isPE(data []byte) bool {
 
 var lnkHeader = []byte{0x4c, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00}
 
+// eicarHead EICAR test satrining boshlanishi va oxiri. To'liq satr dastur ichida
+// yozilmaydi — aks holda boshqa antiviruslar qalqon.exe ni EICAR deb aniqlashi mumkin.
+const (
+	eicarHead = `X5O!P%@AP[4\PZX54(P^)7CC)7}$`
+	eicarTail = `-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`
+)
+
+// isEICAR standart bo'yicha tekshiradi: fayl EICAR satri bilan boshlanadi va
+// (bo'shliqlardan tashqari) 128 baytdan oshmaydi.
+func isEICAR(data []byte) bool {
+	d := bytes.TrimRight(data, " \t\r\n\x1a")
+	return len(d) <= 128 && len(d) == len(eicarHead)+len("EICAR")+len(eicarTail) &&
+		bytes.HasPrefix(d, []byte(eicarHead)) && bytes.HasSuffix(d, []byte(eicarTail)) &&
+		bytes.Equal(d[len(eicarHead):len(eicarHead)+5], []byte("EICAR"))
+}
+
 // checkContent fayl mazmuni va nomiga asoslangan evristikalar.
 func checkContent(name string, data []byte) []Threat {
 	ext := strings.ToLower(filepath.Ext(name))
 	var out []Threat
+	if isEICAR(data) {
+		out = append(out, Threat{Name: "EICAR-Test-File", Severity: Malicious, Kind: KindRule})
+	}
 	if documentExts[ext] && isPE(data) {
 		out = append(out, Threat{Name: "Heur.DisguisedExecutable", Severity: Suspicious, Kind: KindHeuristic})
 	}

@@ -126,17 +126,88 @@ func KillProcess(pid uint32) error {
 	return windows.TerminateProcess(h, 1)
 }
 
-var runKeys = []struct {
+type runKey struct {
 	root registry.Key
 	name string
 	path string
-}{
-	{registry.CURRENT_USER, "HKCU", `Software\Microsoft\Windows\CurrentVersion\Run`},
-	{registry.CURRENT_USER, "HKCU", `Software\Microsoft\Windows\CurrentVersion\RunOnce`},
-	{registry.LOCAL_MACHINE, "HKLM", `Software\Microsoft\Windows\CurrentVersion\Run`},
-	{registry.LOCAL_MACHINE, "HKLM", `Software\Microsoft\Windows\CurrentVersion\RunOnce`},
-	{registry.LOCAL_MACHINE, "HKLM", `Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`},
-	{registry.LOCAL_MACHINE, "HKLM", `Software\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce`},
+}
+
+var runPaths = []string{
+	`Software\Microsoft\Windows\CurrentVersion\Run`,
+	`Software\Microsoft\Windows\CurrentVersion\RunOnce`,
+	`Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run`,
+}
+
+// runKeys barcha foydalanuvchilar (HKEY_USERS) va kompyuter (HKLM) Run kalitlari.
+func runKeys() []runKey {
+	var out []runKey
+	for _, p := range runPaths {
+		out = append(out, runKey{registry.LOCAL_MACHINE, "HKLM", p})
+	}
+	out = append(out,
+		runKey{registry.LOCAL_MACHINE, "HKLM", `Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`},
+		runKey{registry.LOCAL_MACHINE, "HKLM", `Software\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce`},
+	)
+	sids := userSIDs()
+	if len(sids) == 0 {
+		for _, p := range runPaths {
+			out = append(out, runKey{registry.CURRENT_USER, "HKCU", p})
+		}
+	}
+	for _, sid := range sids {
+		for _, p := range runPaths {
+			out = append(out, runKey{registry.USERS, "HKU", sid + `\` + p})
+		}
+	}
+	return out
+}
+
+// userSIDs HKEY_USERS dagi yuklangan foydalanuvchi profillari.
+func userSIDs() []string {
+	k, err := registry.OpenKey(registry.USERS, "", registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return nil
+	}
+	defer k.Close()
+	names, _ := k.ReadSubKeyNames(-1)
+	var out []string
+	for _, n := range names {
+		if strings.HasPrefix(n, "S-1-5-21-") && !strings.HasSuffix(n, "_Classes") {
+			if sk, err := registry.OpenKey(registry.USERS, n+`\Software`, registry.QUERY_VALUE); err == nil {
+				sk.Close()
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// userProfiles C:\Users ichidagi haqiqiy foydalanuvchi papkalari.
+func userProfiles() []string {
+	base := filepath.Join(os.Getenv("SystemDrive")+`\`, "Users")
+	if pub := os.Getenv("PUBLIC"); pub != "" {
+		base = filepath.Dir(pub)
+	}
+	ents, _ := os.ReadDir(base)
+	var out []string
+	for _, e := range ents {
+		switch strings.ToLower(e.Name()) {
+		case "public", "default", "default user", "all users", "defaultapppool":
+			continue
+		}
+		if e.IsDir() && e.Type()&os.ModeSymlink == 0 {
+			out = append(out, filepath.Join(base, e.Name()))
+		}
+	}
+	return out
+}
+
+func startupDirs() []string {
+	dirs := []string{knownDir(windows.FOLDERID_Startup), knownDir(windows.FOLDERID_CommonStartup)}
+	for _, u := range userProfiles() {
+		dirs = append(dirs, filepath.Join(u, `AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup`))
+	}
+	return existing(dirs...)
 }
 
 const winlogonKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`
@@ -144,7 +215,7 @@ const winlogonKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`
 // Autoruns reestrdagi Run kalitlari, Startup papkalari va Winlogon qiymatlarini qaytaradi.
 func Autoruns() []Autorun {
 	var out []Autorun
-	for _, rk := range runKeys {
+	for _, rk := range runKeys() {
 		k, err := registry.OpenKey(rk.root, rk.path, registry.QUERY_VALUE)
 		if err != nil {
 			continue
@@ -159,11 +230,7 @@ func Autoruns() []Autorun {
 		}
 		k.Close()
 	}
-	for _, id := range []*windows.KNOWNFOLDERID{windows.FOLDERID_Startup, windows.FOLDERID_CommonStartup} {
-		dir, err := windows.KnownFolderPath(id, 0)
-		if err != nil {
-			continue
-		}
+	for _, dir := range startupDirs() {
 		ents, _ := os.ReadDir(dir)
 		for _, e := range ents {
 			if e.IsDir() || strings.EqualFold(e.Name(), "desktop.ini") {
@@ -188,6 +255,10 @@ func Autoruns() []Autorun {
 		}
 		k.Close()
 	}
+	out = append(out, appInit()...)
+	out = append(out, ifeo()...)
+	out = append(out, scheduledTasks()...)
+	out = append(out, services()...)
 	return out
 }
 
@@ -195,6 +266,9 @@ func Autoruns() []Autorun {
 func WinlogonModified(a Autorun) bool {
 	if a.Kind != AutorunWinlogon {
 		return false
+	}
+	if a.Name == "AppInit_DLLs" {
+		return strings.TrimSpace(a.Command) != ""
 	}
 	norm := func(s string) string { return strings.TrimRight(strings.ToLower(strings.TrimSpace(s)), ",") }
 	if a.Name == "Shell" {
@@ -214,7 +288,7 @@ func RemoveAutorun(a Autorun) error {
 		defer k.Close()
 		return k.DeleteValue(a.Name)
 	case AutorunWinlogon:
-		if a.Default == "" {
+		if a.Default == "" && a.Name != "AppInit_DLLs" {
 			return errors.New("standart qiymat noma'lum")
 		}
 		k, err := registry.OpenKey(registry.Key(a.root), a.key, registry.SET_VALUE)
@@ -226,7 +300,7 @@ func RemoveAutorun(a Autorun) error {
 	case AutorunFile:
 		return os.Remove(filepath.Join(a.Location, a.Name))
 	}
-	return errors.New("noma'lum yozuv turi")
+	return removeExtra(a)
 }
 
 // IsHiddenSystem fayl/papkada "yashirin" yoki "tizim" atributi bormi.
@@ -264,20 +338,27 @@ func knownDir(id *windows.KNOWNFOLDERID) string {
 	return d
 }
 
-// QuickScanDirs tezkor tekshiruv uchun eng xavfli papkalar.
+// QuickScanDirs tezkor tekshiruv uchun eng xavfli papkalar (barcha foydalanuvchilar uchun).
 func QuickScanDirs() []string {
-	return existing(
+	dirs := []string{
 		knownDir(windows.FOLDERID_Downloads),
 		knownDir(windows.FOLDERID_Desktop),
-		knownDir(windows.FOLDERID_Startup),
-		knownDir(windows.FOLDERID_CommonStartup),
 		os.TempDir(),
 		filepath.Join(os.Getenv("SystemRoot"), "Temp"),
-		filepath.Join(os.Getenv("APPDATA")),
+		os.Getenv("APPDATA"),
 		filepath.Join(os.Getenv("LOCALAPPDATA"), "Temp"),
-		filepath.Join(os.Getenv("PUBLIC")),
-		filepath.Join(os.Getenv("ProgramData"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup"),
-	)
+		os.Getenv("PUBLIC"),
+	}
+	dirs = append(dirs, startupDirs()...)
+	for _, u := range userProfiles() {
+		dirs = append(dirs,
+			filepath.Join(u, "Downloads"),
+			filepath.Join(u, "Desktop"),
+			filepath.Join(u, `AppData\Roaming`),
+			filepath.Join(u, `AppData\Local\Temp`),
+		)
+	}
+	return existing(dirs...)
 }
 
 // MonitorDirs real vaqtda kuzatiladigan papkalar.
@@ -285,9 +366,16 @@ func MonitorDirs() []string {
 	return existing(
 		knownDir(windows.FOLDERID_Downloads),
 		knownDir(windows.FOLDERID_Desktop),
+		knownDir(windows.FOLDERID_Documents),
 		knownDir(windows.FOLDERID_Startup),
 		knownDir(windows.FOLDERID_CommonStartup),
 	)
+}
+
+// MonitorRiskyDirs real vaqtda faqat xavfli turdagi fayllari kuzatiladigan
+// "shovqinli" papkalar (Temp, AppData).
+func MonitorRiskyDirs() []string {
+	return existing(os.TempDir(), os.Getenv("APPDATA"), filepath.Join(os.Getenv("LOCALAPPDATA"), "Temp"), os.Getenv("PUBLIC"))
 }
 
 func existing(ps ...string) []string {

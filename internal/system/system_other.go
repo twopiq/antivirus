@@ -106,3 +106,27 @@ func existing(ps ...string) []string {
 
 // WinlogonModified faqat Windows uchun ma'noga ega.
 func WinlogonModified(a Autorun) bool { return false }
+
+// VerifySignature faqat Windows'da ishlaydi.
+func VerifySignature(path string) bool { return false }
+
+// ProcessModules faqat Windows'da ishlaydi.
+func ProcessModules(pid uint32) []string { return nil }
+
+// HostsPath hosts fayli yo'li.
+func HostsPath() string { return "/etc/hosts" }
+
+// HideConsole Windows bo'lmagan tizimlarda hech narsa qilmaydi.
+func HideConsole() {}
+
+// Notify Windows bo'lmagan tizimlarda hech narsa qilmaydi.
+func Notify(title, text string) {}
+
+// SingleInstance Windows bo'lmagan tizimlarda doim true.
+func SingleInstance(name string) bool { return true }
+
+// MonitorRiskyDirs real vaqtda faqat xavfli fayllari kuzatiladigan papkalar.
+func MonitorRiskyDirs() []string { return existing(os.TempDir()) }
+
+// SingleInstanceFree Windows bo'lmagan tizimlarda doim true.
+func SingleInstanceFree(name string) bool { return true }

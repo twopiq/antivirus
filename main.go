@@ -1,12 +1,11 @@
-// Qalqon — Windows uchun konsol antivirus dasturi.
+// Qalqon — Windows uchun antivirus dasturi (konsol).
 //
 // Ishga tushirish:
 //
 //	qalqon.exe                 — interaktiv menyu
+//	qalqon.exe install         — o'rnatish (real vaqt himoyasi, avtomatik yangilanish)
 //	qalqon.exe quick           — tezkor tekshiruv
 //	qalqon.exe full            — barcha disklarni tekshirish
-//	qalqon.exe scan <yo'l>...  — tanlangan fayl/papkalarni tekshirish
-//	qalqon.exe usb [E:\]       — fleshkani tekshirish va tozalash
 //	qalqon.exe help            — barcha buyruqlar
 package main
 
@@ -16,41 +15,61 @@ import (
 	"os"
 	"strings"
 
+	"github.com/twopiq/antivirus/internal/sigdb"
 	"github.com/twopiq/antivirus/internal/system"
 	"github.com/twopiq/antivirus/internal/ui"
 )
 
-const version = "1.0.0"
+const version = "2.0.0"
 
 func usage() {
-	fmt.Printf(`Qalqon Antivirus v%s — kompyuter va fleshkalarni viruslardan tozalash vositasi
+	fmt.Printf(`Qalqon Antivirus v%s — kompyuter va fleshkalarni viruslardan himoya qilish
 
 Foydalanish:
   qalqon                         interaktiv menyu (sichqoncha bilan ikki marta bosilganda)
-  qalqon quick                   tezkor tekshiruv: jarayonlar, avtoyuklash, Yuklamalar, Ish stoli, Temp
+
+ Himoya:
+  qalqon install                 o'rnatish: real vaqt himoyasi, har 6 soatda baza yangilash,
+                                 haftalik tekshiruv (Task Scheduler orqali)
+  qalqon uninstall [--purge]     o'chirish (--purge — baza va karantin ham)
+  qalqon status                  himoya holati
+  qalqon protect                 real vaqt himoyasini shu oynada ishga tushirish
+
+ Tekshiruv:
+  qalqon quick                   tezkor: jarayonlar va DLL'lar, avtoyuklash, vazifalar, xizmatlar,
+                                 hosts fayli, Yuklamalar, Ish stoli, Temp, AppData
   qalqon full                    barcha disklarni to'liq tekshirish
   qalqon scan <yo'l> [yo'l...]   tanlangan fayl yoki papkalarni tekshirish
-  qalqon usb [disk]              fleshkani tekshirish, yorliq (shortcut) virusidan tozalash,
-                                 yashirilgan fayllarni tiklash (disk ko'rsatilmasa — barcha fleshkalar)
-  qalqon startup                 avtoyuklash dasturlarini ko'rish va tekshirish
+  qalqon usb [disk]              fleshkani tekshirish, yorliq virusidan tozalash, yashirilgan fayllarni tiklash
+  qalqon startup                 avtoyuklash, vazifalar, xizmatlar, IFEO va hosts faylini ko'rish
   qalqon processes               ishlab turgan jarayonlarni tekshirish
-  qalqon monitor                 real vaqt kuzatuvi: yangi fayllar va ulangan fleshkalar
-  qalqon update [--full] [--file F] [--url U]
-                                 virus bazasini yangilash (MalwareBazaar, abuse.ch)
+
+ Baza:
+  qalqon update                  ClamAV va MalwareBazaar bazalarini yangilash
+        --source all|clamav|bazaar   faqat bitta manba
+        --full                       MalwareBazaar to'liq bazasi (oxirgi 48 soat o'rniga)
+        --file F                     fayldan import: main.cvd, daily.cvd, *.hdb, *.hsb, *.ndb, xeshlar.txt
+        --url U                      boshqa xeshlar ro'yxatidan yuklash
+        --force                      kutish vaqtiga qaramay yuklash va qayta kompilyatsiya qilish
   qalqon quarantine list|restore N|delete N|clear
-                                 karantin bilan ishlash
+  qalqon allow <fayl|sha256>     faylni ishonchli deb belgilash (noto'g'ri aniqlanganda)
+  qalqon allow list|remove N
+  qalqon exclude add|remove|list <yo'l>
+                                 tekshirilmaydigan papkalar
   qalqon version                 versiya va baza haqida ma'lumot
 
 Tekshiruv sozlamalari (buyruqdan keyin yoziladi):
-  --action ask|report|quarantine|delete
-                    topilgan tahdidlar bilan nima qilish (standart: ask — so'rash)
-  --yes             barcha tahdidlarni so'ramasdan karantinga o'tkazish (= --action quarantine)
+  --action ask|auto|report|quarantine|delete
+                    ask — so'rash (standart), auto — XAVFLI fayllarni karantinga, shubhalilar haqida
+                    xabar berish, report — faqat hisobot, quarantine — hammasini karantinga
+  --yes             = --action quarantine
+  --quiet           faqat natijalar (rejalashtirilgan vazifalar uchun)
+  --no-cache        o'zgarmagan fayllarni ham qayta tekshirish
   --workers N       parallel oqimlar soni
   --max-size MB     mazmuni tekshiriladigan eng katta fayl hajmi (standart 50)
   --no-color        ranglarsiz chiqish
 
 Ma'lumotlar papkasi: %s
-(virus bazasi, karantin, jurnallar; QALQON_HOME o'zgaruvchisi bilan o'zgartirish mumkin)
 `, version, system.DataDir())
 }
 
@@ -65,26 +84,38 @@ func main() {
 	args := os.Args[2:]
 
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	action := fs.String("action", "ask", "ask|report|quarantine|delete")
+	action := fs.String("action", "ask", "ask|auto|report|quarantine|delete")
 	yes := fs.Bool("yes", false, "so'ramasdan karantinga o'tkazish")
+	quiet := fs.Bool("quiet", false, "faqat natijalar")
+	noCache := fs.Bool("no-cache", false, "keshsiz tekshirish")
 	workers := fs.Int("workers", 0, "parallel oqimlar soni")
 	maxSize := fs.Int64("max-size", 50, "eng katta fayl hajmi, MB")
 	noColor := fs.Bool("no-color", false, "ranglarsiz")
-	full := fs.Bool("full", false, "update: to'liq bazani yuklash")
-	file := fs.String("file", "", "update: mahalliy xeshlar faylidan import qilish")
+	full := fs.Bool("full", false, "update: to'liq MalwareBazaar bazasi")
+	file := fs.String("file", "", "update: fayldan import")
 	url := fs.String("url", "", "update: boshqa manzildan yuklash")
+	source := fs.String("source", "all", "update: all|clamav|bazaar")
+	force := fs.Bool("force", false, "update: majburiy yangilash")
+	background := fs.Bool("background", false, "protect: fon rejimi (oynasiz)")
+	purge := fs.Bool("purge", false, "uninstall: ma'lumotlarni ham o'chirish")
 	fs.Usage = usage
 	_ = fs.Parse(reorderFlags(args))
-	if *noColor {
+	if *noColor || *quiet {
 		ui.SetColor(false)
 	}
 	if *yes {
 		*action = "quarantine"
 	}
 	switch *action {
-	case "ask", "report", "quarantine", "delete":
+	case "ask", "auto", "report", "quarantine", "delete":
 	default:
 		fmt.Fprintln(os.Stderr, "Noto'g'ri --action qiymati:", *action)
+		os.Exit(2)
+	}
+	switch *source {
+	case "all", "clamav", "bazaar":
+	default:
+		fmt.Fprintln(os.Stderr, "Noto'g'ri --source qiymati:", *source)
 		os.Exit(2)
 	}
 
@@ -93,8 +124,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, ui.Red("Xato: "+err.Error()))
 		os.Exit(1)
 	}
-	needAdmin := map[string]bool{"quick": true, "full": true, "usb": true, "startup": true, "processes": true, "monitor": true}
-	if needAdmin[cmd] && !system.IsAdmin() {
+	app.quiet = *quiet
+	app.useCache = !*noCache
+	needAdmin := map[string]bool{"quick": true, "full": true, "usb": true, "startup": true, "processes": true, "protect": true}
+	if needAdmin[cmd] && !system.IsAdmin() && !*quiet {
 		fmt.Println(ui.Yellow("Diqqat: dastur administrator huquqisiz ishlamoqda — ba'zi fayllar va jarayonlarni tekshirib/o'chirib bo'lmasligi mumkin."))
 	}
 
@@ -116,12 +149,22 @@ func main() {
 		code = app.startupCheck()
 	case "processes", "ps":
 		code = app.processScan()
-	case "monitor", "watch":
-		code = app.monitor()
+	case "protect", "monitor", "watch":
+		code = app.protect(*background)
 	case "update":
-		code = app.update(*url, *file, *full)
+		code = app.update(updateOpts{source: *source, full: *full, file: *file, url: *url, force: *force})
 	case "quarantine", "q":
 		code = app.quarantineCmd(fs.Args())
+	case "allow":
+		code = app.allowCmd(fs.Args())
+	case "exclude":
+		code = app.excludeCmd(fs.Args())
+	case "install":
+		code = app.install()
+	case "uninstall":
+		code = app.uninstall(*purge)
+	case "status":
+		code = app.status()
 	case "version":
 		app.printVersion()
 	case "help", "h", "?":
@@ -137,7 +180,7 @@ func main() {
 // reorderFlags bayroqlarni pozitsion argumentlardan oldinga o'tkazadi, shunda
 // "qalqon scan D:\ --yes" ham ishlaydi.
 func reorderFlags(args []string) []string {
-	withValue := map[string]bool{"action": true, "workers": true, "max-size": true, "file": true, "url": true}
+	withValue := map[string]bool{"action": true, "workers": true, "max-size": true, "file": true, "url": true, "source": true}
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -173,25 +216,43 @@ func runInteractive() int {
 		ui.Pause()
 		return 1
 	}
+	if app.store.CurrentVersion() == "" {
+		ui.Banner(version)
+		fmt.Println(ui.Yellow("\nVirus bazasi hali yuklanmagan. Ishonchli himoya uchun uni yuklash kerak (ClamAV + MalwareBazaar)."))
+		if ui.Confirm("Hozir yuklaymizmi?", true) {
+			app.update(updateOpts{source: "all"})
+			ui.Pause()
+		}
+	}
 	for {
 		ui.Clear()
 		ui.Banner(version)
-		fmt.Printf("  Virus bazasi: %s ta imzo   Karantin: %d ta fayl\n\n", ui.Bold(fmt.Sprint(app.eng.DB.Len())), app.quarantineCount())
+		installed, running, _ := protectionStatus()
+		prot := ui.Red("O'CHIQ")
+		switch {
+		case running:
+			prot = ui.Green("YOQILGAN")
+		case installed:
+			prot = ui.Yellow("o'rnatilgan, lekin ishlamayapti")
+		}
+		fmt.Printf("  Real vaqt himoyasi: %s   Baza: %s ta imzo   Karantin: %d\n\n", prot, ui.Bold(sigdb.FormatCount(app.signatureCount())), app.quarantineCount())
 		items := []string{
 			"Tezkor tekshiruv (jarayonlar, avtoyuklash, Yuklamalar, Temp)",
 			"To'liq tekshiruv (barcha disklar)",
 			"Papka yoki faylni tekshirish",
 			"Fleshkani tekshirish va tozalash (USB)",
-			"Avtoyuklash dasturlari",
+			"Avtoyuklash, xizmatlar, vazifalar va hosts fayli",
 			"Ishlab turgan jarayonlarni tekshirish",
 			"Karantin",
 			"Virus bazasini yangilash",
-			"Real vaqt kuzatuvi (monitor)",
+			"Real vaqt himoyasi (shu oynada)",
+			"Himoya holati / o'rnatish / o'chirish",
+			"Ishonchli fayllar va istisnolar",
 		}
 		for i, it := range items {
-			fmt.Printf("  %s %s\n", ui.Cyan(fmt.Sprintf("%d.", i+1)), it)
+			fmt.Printf("  %s %s\n", ui.Cyan(fmt.Sprintf("%2d.", i+1)), it)
 		}
-		fmt.Printf("  %s %s\n\n", ui.Cyan("0."), "Chiqish")
+		fmt.Printf("  %s %s\n\n", ui.Cyan(" 0."), "Chiqish")
 		switch ui.Ask("Tanlang: ") {
 		case "1":
 			app.quickScan()
@@ -211,10 +272,41 @@ func runInteractive() int {
 		case "7":
 			app.quarantineMenu()
 		case "8":
-			full := ui.Confirm("To'liq bazani yuklaysizmi? (katta hajm; yo'q bo'lsa oxirgi 48 soat)", false)
-			app.update("", "", full)
+			full := ui.Confirm("MalwareBazaar to'liq bazasini yuklaymizmi? (katta hajm; yo'q bo'lsa oxirgi 48 soat)", false)
+			app.update(updateOpts{source: "all", full: full})
 		case "9":
-			app.monitor()
+			app.protect(false)
+		case "10":
+			app.status()
+			fmt.Println("\n  1. O'rnatish / qayta o'rnatish   2. O'chirish   0. Orqaga")
+			switch ui.Ask("Tanlang: ") {
+			case "1":
+				app.install()
+			case "2":
+				if ui.Confirm(ui.Red("Qalqon o'chirilsinmi?"), false) {
+					app.uninstall(ui.Confirm("Baza va karantin ham o'chirilsinmi?", false))
+				}
+			}
+		case "11":
+			app.allowCmd([]string{"list"})
+			fmt.Println()
+			app.excludeCmd([]string{"list"})
+			fmt.Println("\n  1. Faylni ishonchli deb belgilash   2. Ishonchlilardan o'chirish")
+			fmt.Println("  3. Papkani istisnoga qo'shish        4. Istisnoni o'chirish   0. Orqaga")
+			switch ui.Ask("Tanlang: ") {
+			case "1":
+				if p := strings.Trim(ui.Ask("Fayl yo'li: "), `"' `); p != "" {
+					app.allowCmd([]string{p})
+				}
+			case "2":
+				app.allowCmd([]string{"remove", ui.Ask("Raqami: ")})
+			case "3":
+				if p := strings.Trim(ui.Ask("Papka yo'li: "), `"' `); p != "" {
+					app.excludeCmd([]string{"add", p})
+				}
+			case "4":
+				app.excludeCmd([]string{"remove", ui.Ask("Raqami: ")})
+			}
 		case "0", "q", "exit":
 			return 0
 		default:
